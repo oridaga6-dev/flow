@@ -604,7 +604,24 @@ function countUp(el, from, to){
   requestAnimationFrame(step);
 }
 
+/* Top-level safety net: if anything throws anywhere during a render pass, show a
+   visible, readable error instead of leaving the page silently blank (the previous
+   failure mode for incompatible cached data — see sanitizeLoadedData above). This
+   never hides a real bug; it just makes one visible instead of invisible. */
 function render(){
+  try{ renderInner(); }
+  catch(e){
+    console.error('FLOW render error:', e);
+    const root = document.getElementById('root');
+    if(root) root.innerHTML = `<div style="direction:rtl;text-align:right;padding:40px 24px;font-family:Heebo,sans-serif;color:#EAF6F6;background:#071619;min-height:100vh;">
+      <div style="font-size:20px;font-weight:700;margin-bottom:10px;">משהו השתבש בטעינת flow ⚠️</div>
+      <div style="font-size:14px;color:#8FB0B3;margin-bottom:16px;line-height:1.6;">אפשר לנסות לרענן. אם זה חוזר, תעתיק את הטקסט הבא ותשלח אותו:</div>
+      <pre style="white-space:pre-wrap;background:#0F2830;border:1px solid #1C3B42;border-radius:12px;padding:14px;font-size:12.5px;color:#FF9478;direction:ltr;text-align:left;">${esc(e.message)}\n${esc((e.stack||'').split('\n').slice(0,4).join('\n'))}</pre>
+      <button style="margin-top:16px;border:none;border-radius:12px;padding:12px 20px;font-weight:700;color:#fff;background:#2B93A8;" onclick="localStorage.removeItem('flow-data');location.reload();">איפוס נתונים ורענון</button>
+    </div>`;
+  }
+}
+function renderInner(){
   document.documentElement.setAttribute('data-theme', data.settings.theme||'dark');
   const root = document.getElementById('root');
   if(!data.onboardingCompleted){ renderOnboarding(root); return; }
