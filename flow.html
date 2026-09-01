@@ -147,6 +147,29 @@ button{font-family:inherit;cursor:pointer;}
 @media (max-width:520px){
   .goal-grid{grid-template-columns:1fr;}
 }
+
+/* ---- Analytics (Phase 6) ---- */
+.chart-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px;}
+.chart-filter-btn{background:var(--chip);border:1px solid var(--border);color:var(--muted);border-radius:20px;padding:0 16px;font-size:12.5px;font-weight:600;min-height:44px;transition:background .15s,color .15s,border-color .15s;}
+.chart-filter-btn.active{background:color-mix(in srgb, var(--accent) 18%, transparent);border-color:var(--accent);color:var(--accent);}
+.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+.chart-block{position:relative;}
+.chart-svg-wrap{width:100%;overflow-x:auto;}
+.chart-svg{display:block;}
+.chart-hit{cursor:pointer;pointer-events:all;}
+.chart-svg rect.chart-hit:hover{fill:color-mix(in srgb, var(--accent) 8%, transparent);}
+.chart-donut-seg{transition:opacity .15s;}
+.chart-donut-seg[data-tip]{cursor:pointer;}
+.chart-donut-seg:hover{opacity:.82;}
+.chart-empty{color:var(--muted);font-size:13px;text-align:center;padding:34px 10px;}
+.chart-legend{display:flex;flex-direction:column;gap:7px;font-size:12.5px;}
+.chart-legend-row{display:flex;align-items:center;gap:6px;}
+.chart-legend-dot{width:10px;height:10px;border-radius:50%;flex:none;}
+.chart-tooltip{position:fixed;z-index:70;background:var(--card-solid);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:7px 11px;font-size:12.5px;font-weight:600;box-shadow:var(--shadow);pointer-events:none;white-space:nowrap;}
+
+@media (max-width:720px){
+  .chart-grid{grid-template-columns:1fr;}
+}
 .fin-toggle.on .dot{transform:translateX(-16px);}
 
 @media (max-width:520px){
@@ -264,7 +287,6 @@ const NAV_DESKTOP = [['home','ראשי','🏠'],['money','כסף','💰'],['fixe
 
 /* Empty-state copy per screen (skeleton only — no feature logic yet) */
 const SCREEN_META = {
-  charts:     {icon:'📊', title:'גרפים', sub:'הכנסות מול הוצאות, חיסכון, יתרה ומקורות הכנסה — אינטראקטיביים.'},
   calendar:   {icon:'📅', title:'לוח שנה', sub:'תאריך לועזי ועברי, משימות ותזכורות לפי יום.'},
   tasks:      {icon:'🔔', title:'משימות', sub:'"חשוב להיום" ותזכורות עם עדיפות וסטטוס.'},
   calculators:{icon:'🧮', title:'מחשבונים', sub:'מחשבון אחד מרכזי עם כל המצבים — כולל מחשבון אמיתי עם מקשים.'},
@@ -292,6 +314,12 @@ const EXPENSE_FREQ_OPTIONS = [
 let data = load();
 let tab = 'home';
 let moreSheetOpen = false;
+
+/* Analytics (Phase 6) — transient UI state, not persisted */
+const CHART_RANGES = [['month','חודש'],['3','3 חודשים'],['6','6 חודשים'],['year','שנה'],['all','הכל']];
+let chartsRange = 'all';
+let lastTappedChartPoint = null;
+let chartTooltipTimeout = null;
 
 function defaultData(){
   return {
@@ -611,6 +639,7 @@ function tabHTML(){
   if(tab==='goals') return goalsHTML();
   if(tab==='achievements') return achievementsHTML();
   if(tab==='history') return historyHTML();
+  if(tab==='charts') return chartsHTML();
   const meta = SCREEN_META[tab];
   if(!meta) return '';
   return `<div class="empty-screen">
@@ -962,6 +991,181 @@ function monthDetailHTML(key){
   </div>`;
 }
 
+/* ===================== Analytics — Phase 6 (read-only; reuses existing calc fns) ===================== */
+function monthLabelShort(key){
+  const [y,m] = key.split('-');
+  const names=['ינו','פבר','מרץ','אפר','מאי','יונ','יול','אוג','ספט','אוק','נוב','דצמ'];
+  return `${names[parseInt(m)-1]}׳${y.slice(2)}`;
+}
+function monthsInRange(rangeKey){
+  const keys = sortedMonthKeys();
+  if(rangeKey==='month') return keys.slice(-1);
+  if(rangeKey==='3') return keys.slice(-3);
+  if(rangeKey==='6') return keys.slice(-6);
+  if(rangeKey==='year') return keys.slice(-12);
+  return keys;
+}
+function chartSeriesForRange(rangeKey){
+  return monthsInRange(rangeKey).map(k=>{
+    const m = data.months[k];
+    return { key:k, label:monthLabelShort(k), income:monthIncomeCalc(m), expenses:monthExpensesCalc(m), savings:monthSavingsCalc(m) };
+  });
+}
+/* Running total uses ALL months (true historical accumulation, matching currentLiquidBalance()),
+   then slices to the selected range — so the visible trend reflects real liquid-balance history,
+   not a value artificially reset to 0 at the edge of the chosen window. */
+function runningBalanceSeries(rangeKey){
+  const allKeys = sortedMonthKeys();
+  let running = 0;
+  const full = allKeys.map(k=>{ running += monthBalanceCalc(data.months[k]); return { key:k, label:monthLabelShort(k), value:running }; });
+  const rangeKeys = new Set(monthsInRange(rangeKey));
+  return full.filter(p=>rangeKeys.has(p.key));
+}
+function incomeSourcesForRange(rangeKey){
+  const totals = {};
+  INCOME_SOURCES.forEach(s=>totals[s.key]=0);
+  monthsInRange(rangeKey).forEach(k=>{ (data.months[k].income||[]).forEach(i=>{ totals[i.source]=(totals[i.source]||0)+i.amount; }); });
+  return INCOME_SOURCES.map(s=>({ key:s.key, label:s.label, icon:s.icon, value: totals[s.key]||0 }));
+}
+
+function chartEmptyHTML(text){ return `<div class="chart-empty">${esc(text)}</div>`; }
+
+function svgBarChartIncomeExpenses(series){
+  if(series.length===0) return chartEmptyHTML('אין עדיין נתונים להצגה בטווח הזה.');
+  const n = series.length;
+  const W = Math.max(600, n*46), H=220, padL=44, padR=10, padT=14, padB=28;
+  const innerW=W-padL-padR, innerH=H-padT-padB;
+  const maxVal = Math.max(1, ...series.map(s=>Math.max(s.income,s.expenses)));
+  const groupW = innerW/n;
+  const barW = Math.min(16, groupW*0.32);
+  let bars='', overlays='', labels='';
+  series.forEach((s,i)=>{
+    const gx = padL + i*groupW + groupW/2;
+    const incH = (s.income/maxVal)*innerH, expH = (s.expenses/maxVal)*innerH;
+    bars += `<rect x="${(gx-barW-2).toFixed(1)}" y="${(padT+innerH-incH).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1,incH).toFixed(1)}" rx="3" fill="var(--pos)"/>`;
+    bars += `<rect x="${(gx+2).toFixed(1)}" y="${(padT+innerH-expH).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1,expH).toFixed(1)}" rx="3" fill="var(--neg)"/>`;
+    overlays += `<rect class="chart-hit" role="button" tabindex="0" aria-label="${esc(s.label+' · הכנסות '+fmt(s.income)+' · הוצאות '+fmt(s.expenses))}" data-chart-point="${s.key}" data-tip="${esc(s.label+' · הכנסות '+fmt(s.income)+' · הוצאות '+fmt(s.expenses))}" x="${(padL+i*groupW).toFixed(1)}" y="${padT}" width="${groupW.toFixed(1)}" height="${innerH}" fill="transparent"/>`;
+    labels += `<text x="${gx.toFixed(1)}" y="${H-8}" font-size="10" fill="var(--muted)" text-anchor="middle">${esc(s.label)}</text>`;
+  });
+  return `<div class="chart-svg-wrap"><svg class="chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <line x1="${padL}" y1="${padT+innerH}" x2="${W-padR}" y2="${padT+innerH}" stroke="var(--border)" stroke-width="1"/>
+    ${bars}${overlays}${labels}
+  </svg></div>`;
+}
+
+function svgLineChart(series, valueKey, opts){
+  opts = opts||{};
+  if(series.length===0) return chartEmptyHTML(opts.emptyText||'אין עדיין נתונים להצגה בטווח הזה.');
+  const n = series.length;
+  const W = Math.max(600, n*46), H=220, padL=44, padR=16, padT=14, padB=28;
+  const innerW=W-padL-padR, innerH=H-padT-padB;
+  const vals = series.map(s=>s[valueKey]);
+  const maxVal = Math.max(1, ...vals, 0), minVal = Math.min(0, ...vals);
+  const range = (maxVal-minVal)||1;
+  const stepX = n>1 ? innerW/(n-1) : 0;
+  const color = opts.color||'var(--accent)';
+  const pts = series.map((s,i)=>({ x: padL+(n>1?i*stepX:innerW/2), y: padT+innerH-((s[valueKey]-minVal)/range)*innerH, s }));
+  const pathD = pts.map((p,i)=>(i===0?'M':'L')+p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' ');
+  const zeroY = padT+innerH-((0-minVal)/range)*innerH;
+  const areaD = opts.area ? `${pathD} L ${pts[pts.length-1].x.toFixed(1)} ${zeroY.toFixed(1)} L ${pts[0].x.toFixed(1)} ${zeroY.toFixed(1)} Z` : '';
+  const dots = pts.map(p=>`<circle r="4" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" fill="${color}"/>`).join('');
+  const hits = pts.map(p=>`<circle class="chart-hit" role="button" tabindex="0" aria-label="${esc(p.s.label+' · '+fmt(p.s[valueKey]))}" r="16" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" fill="transparent" data-chart-point="${p.s.key}" data-tip="${esc(p.s.label+' · '+fmt(p.s[valueKey]))}"/>`).join('');
+  const labels = pts.map(p=>`<text x="${p.x.toFixed(1)}" y="${H-8}" font-size="10" fill="var(--muted)" text-anchor="middle">${esc(p.s.label)}</text>`).join('');
+  return `<div class="chart-svg-wrap"><svg class="chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    ${minVal<0?`<line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${W-padR}" y2="${zeroY.toFixed(1)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="3,3"/>`:''}
+    ${areaD?`<path d="${areaD}" fill="${color}" opacity="0.15"/>`:''}
+    <path d="${pathD}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    ${dots}${hits}${labels}
+  </svg></div>`;
+}
+
+function svgDonutChart(items){
+  const total = items.reduce((s,i)=>s+i.value,0);
+  if(total<=0) return chartEmptyHTML('אין עדיין הכנסות בטווח הזה.');
+  const colors = ['var(--accent)','var(--accent2)','var(--pos)'];
+  const cx=100,cy=100,r=70,strokeW=28;
+  const circumference = 2*Math.PI*r;
+  let offset=0;
+  const nonZero = items.filter(i=>i.value>0);
+  const segs = nonZero.map((it,i)=>{
+    const frac = it.value/total;
+    const dash = frac*circumference;
+    const seg = `<circle class="chart-donut-seg" role="img" aria-label="${esc(it.icon+' '+it.label+': '+fmt(it.value)+' ('+Math.round(frac*100)+'%)')}" data-tip="${esc(it.icon+' '+it.label+': '+fmt(it.value)+' ('+Math.round(frac*100)+'%)')}" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${colors[i%colors.length]}" stroke-width="${strokeW}" stroke-dasharray="${dash.toFixed(1)} ${(circumference-dash).toFixed(1)}" stroke-dashoffset="${(-offset).toFixed(1)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+    offset += dash;
+    return seg;
+  }).join('');
+  const legend = nonZero.map((it,i)=>`<div class="chart-legend-row"><span class="chart-legend-dot" style="background:${colors[i%colors.length]}"></span>${it.icon} ${esc(it.label)} · <b>${fmt(it.value)}</b></div>`).join('');
+  return `<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;justify-content:center;">
+    <svg class="chart-svg" style="width:160px;height:160px;flex:none;" viewBox="0 0 200 200">${segs}</svg>
+    <div class="chart-legend">${legend}</div>
+  </div>`;
+}
+
+function chartsHTML(){
+  if(sortedMonthKeys().length===0){
+    return `<div class="empty-screen"><div class="icon">📊</div><div class="title display">גרפים</div><div class="sub">עוד אין נתונים להציג - ברגע שתוסיף הכנסה, הוצאה או חיסכון, הגרפים יתמלאו כאן.</div></div>`;
+  }
+  const series = chartSeriesForRange(chartsRange);
+  const balanceSeries = runningBalanceSeries(chartsRange);
+  const sources = incomeSourcesForRange(chartsRange);
+  return `<div class="fin-section">
+    <div class="chart-filters">
+      ${CHART_RANGES.map(([key,label])=>`<button class="chart-filter-btn ${chartsRange===key?'active':''}" data-chart-range="${key}">${label}</button>`).join('')}
+    </div>
+    <div class="chart-grid">
+      <div class="fin-block chart-block">
+        <div class="fin-block-title">📈 הכנסות מול הוצאות</div>
+        ${svgBarChartIncomeExpenses(series)}
+      </div>
+      <div class="fin-block chart-block">
+        <div class="fin-block-title">🏦 חיסכון לאורך זמן</div>
+        ${svgLineChart(series,'savings',{color:'var(--accent2)',area:true,emptyText:'אין עדיין חיסכון להציג בטווח הזה.'})}
+      </div>
+      <div class="fin-block chart-block">
+        <div class="fin-block-title">💰 שינוי יתרה</div>
+        ${svgLineChart(balanceSeries,'value',{color:'var(--accent)',emptyText:'אין עדיין מספיק נתונים להציג את מגמת היתרה.'})}
+      </div>
+      <div class="fin-block chart-block">
+        <div class="fin-block-title">🧩 מקורות הכנסה</div>
+        ${svgDonutChart(sources)}
+      </div>
+    </div>
+    <div class="fin-note">לחיצה על נקודה בגרף פותחת את פירוט אותו חודש במסך "חודשים קודמים".</div>
+  </div>`;
+}
+
+/* ---- shared tooltip: one transient DOM node, created/removed directly
+   (same pattern as money-toast / celebrate-overlay) — never a persistent
+   document-level listener, so nothing accumulates across renders. ---- */
+function isTouchDevice(){ return matchMedia('(hover: none)').matches; }
+function showChartTooltip(text, x, y){
+  hideChartTooltip();
+  const el = document.createElement('div');
+  el.className = 'chart-tooltip';
+  el.id = 'chart-tooltip';
+  el.textContent = text;
+  document.body.appendChild(el);
+  positionChartTooltip(x,y);
+  if(isTouchDevice()) chartTooltipTimeout = setTimeout(hideChartTooltip, 2200);
+}
+function moveChartTooltip(x,y){ positionChartTooltip(x,y); }
+function positionChartTooltip(x,y){
+  const el = document.getElementById('chart-tooltip');
+  if(!el) return;
+  const pad = 10;
+  let left = x + pad, top = y - el.offsetHeight - pad;
+  if(left + el.offsetWidth > window.innerWidth - 6) left = window.innerWidth - el.offsetWidth - 6;
+  if(left < 6) left = 6;
+  if(top < 6) top = y + pad;
+  el.style.left = left+'px';
+  el.style.top = top+'px';
+}
+function hideChartTooltip(){
+  if(chartTooltipTimeout){ clearTimeout(chartTooltipTimeout); chartTooltipTimeout=null; }
+  const el = document.getElementById('chart-tooltip');
+  if(el) el.remove();
+}
+
 function attachHandlers(){
   document.querySelectorAll('[data-nav]').forEach(el=>el.addEventListener('click', ()=>{ tab = el.dataset.nav; if(tab==='history') historyOpenKey=null; render(); }));
   document.querySelectorAll('[data-nav-more]').forEach(el=>el.addEventListener('click', ()=>{ tab = el.dataset.navMore; if(tab==='history') historyOpenKey=null; moreSheetOpen=false; render(); }));
@@ -1043,6 +1247,28 @@ function attachHandlers(){
     render();
   }));
   document.querySelectorAll('[data-close-month]').forEach(el=>el.addEventListener('click', ()=>{ historyOpenKey = null; render(); }));
+
+  document.querySelectorAll('[data-chart-range]').forEach(el=>el.addEventListener('click', ()=>{ chartsRange = el.dataset.chartRange; render(); }));
+  document.querySelectorAll('[data-tip]').forEach(el=>{
+    el.addEventListener('mouseenter', (e)=>{ if(!isTouchDevice()) showChartTooltip(el.dataset.tip, e.clientX, e.clientY); });
+    el.addEventListener('mousemove', (e)=>{ if(!isTouchDevice()) moveChartTooltip(e.clientX, e.clientY); });
+    el.addEventListener('mouseleave', ()=>{ if(!isTouchDevice()) hideChartTooltip(); });
+    el.addEventListener('click', ()=>{
+      const key = el.dataset.chartPoint;
+      if(isTouchDevice()){
+        if(key && lastTappedChartPoint===key){
+          hideChartTooltip(); lastTappedChartPoint=null;
+          tab='history'; historyOpenKey=key; render();
+          return;
+        }
+        lastTappedChartPoint = key || null;
+        const rect = el.getBoundingClientRect();
+        showChartTooltip(el.dataset.tip, rect.left+rect.width/2, rect.top);
+        return;
+      }
+      if(key){ hideChartTooltip(); tab='history'; historyOpenKey=key; render(); }
+    });
+  });
 
   runDashboardCountUp();
 }
