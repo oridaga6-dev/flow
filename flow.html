@@ -344,8 +344,23 @@ function defaultData(){
     lastActiveMonthKey: null,
   };
 }
+/* Guards against cached data from an incompatible/older version of this file at the
+   same origin (e.g. missing/wrong-typed fields) — without this, a bad shape here
+   throws deep inside render() before root.innerHTML is ever set, which shows up to
+   the user as a fully blank page with no on-screen error. */
+function sanitizeLoadedData(d){
+  if(typeof d.months !== 'object' || d.months===null || Array.isArray(d.months)) d.months = {};
+  if(!Array.isArray(d.goals)) d.goals = [];
+  if(!Array.isArray(d.fixedExpenses)) d.fixedExpenses = [];
+  if(!d.user || typeof d.user !== 'object') d.user = defaultData().user;
+  if(!d.preferences || typeof d.preferences !== 'object') d.preferences = defaultData().preferences;
+  if(!d.preferences.notifications || typeof d.preferences.notifications !== 'object') d.preferences.notifications = { enabled:true };
+  if(!d.settings || typeof d.settings !== 'object') d.settings = defaultData().settings;
+  if(!d.onboardingGoalDraft || typeof d.onboardingGoalDraft !== 'object') d.onboardingGoalDraft = defaultData().onboardingGoalDraft;
+  return d;
+}
 function load(){
-  try{ const raw = localStorage.getItem('flow-data'); if(raw) return {...defaultData(), ...JSON.parse(raw)}; }catch(e){}
+  try{ const raw = localStorage.getItem('flow-data'); if(raw) return sanitizeLoadedData({...defaultData(), ...JSON.parse(raw)}); }catch(e){}
   return defaultData();
 }
 function persist(){ localStorage.setItem('flow-data', JSON.stringify(data)); render(); }
